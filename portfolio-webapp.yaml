@@ -1,0 +1,167 @@
+# namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: portfolio
+---
+# config-map
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portfolio-webapp-configmap
+  namespace: portfolio
+data:
+  PORTFOLIO_API_URL: "portfolio-api-service.portfolio.svc.cluster.local"
+  PORTFOLIO_API_USER: "test"
+  PORTFOLIO_ALLOWED_HOSTS: "*"
+  PORTFOLIO_LOG_LEVEL: "Warning"
+---
+# secret
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: portfolio-webapp-secret
+  namespace: portfolio
+data:
+  PORTFOLIO_API_PASS: SUxpa2VCaWdCeXRlc0FuZElDYW5ub3RMaWU=
+---
+# deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portfolio-webapp
+  namespace: portfolio
+spec:
+  selector:
+    matchLabels:
+      app: portfolio-webapp
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: portfolio-webapp
+      annotations:
+        container.apparmor.security.beta.kubernetes.io/portfolio-webapp-container: runtime/default
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        runAsGroup: 1001
+        procMount: "Default"
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - all
+        seccompProfile:
+          type: RuntimeDefault
+        # v1.30 => https://v1-30.docs.kubernetes.io/docs/tutorials/security/apparmor/#appArmorProfile
+        # appArmorProfile:
+        #   type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: portfolio-webapp-container
+          image: mkelm/portfolio-webapp:1.0
+          imagePullPolicy: Always
+          readinessProbe:
+            initialDelaySeconds: 30
+            httpGet:
+              path: "/"
+              port: 80
+          livenessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 12
+            httpGet:
+              path: "/health"
+              port: 80
+          ports:
+            - containerPort: 4200
+          resources:
+            requests:
+              cpu: 0.3
+              memory: 400Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+          env:
+            - name: API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-webapp-configmap
+                  key: PORTFOLIO_API_URL
+            - name: API_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-webapp-configmap
+                  key: PORTFOLIO_API_USER
+            - name: API_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: portfolio-webapp-secret
+                  key: PORTFOLIO_API_PASS
+            - name: ALLOWED_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-webapp-configmap
+                  key: PORTFOLIO_ALLOWED_HOSTS
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-webapp-configmap
+                  key: PORTFOLIO_LOG_LEVEL
+---
+# service
+apiVersion: v1
+kind: Service
+metadata:
+  name: portfolio-webapp-service
+  namespace: portfolio
+spec:
+  ports:
+    - port: 80
+      targetPort: 4200
+  type: ClusterIP
+  selector:
+    app: portfolio-webapp
+---
+# ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portfolio-ingress
+  namespace: portfolio
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # https://github.com/kubernetes/ingress-nginx/blob/main/docs/user-guide/nginx-configuration/annotations.md#backend-protocol
+    # nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts:
+  #       - portfolio.example.com
+  #     secretName: portfolio-tls-secret
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: portfolio-api-service
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: portfolio-webapp-service
+                port:
+                  number: 80 
+      # host: portfolio.example.com
